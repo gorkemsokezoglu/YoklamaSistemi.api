@@ -1,5 +1,5 @@
 # app/routers/auth.py
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Query
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from app.models.models import User, Student, Academician, FaceData
@@ -8,13 +8,19 @@ from app.schemas.auth import UserCreate, UserResponse, LoginRequest, PasswordCha
 from app.schemas.student import StudentCreate, StudentResponse, FaceDataCreate
 from app.schemas.academician import AcademicianCreate, AcademicianResponse
 from app.services.face_capture_service import FaceCaptureService
+from app.services.email_service import EmailService
+from app.services.verification_cache import verification_cache
+from app.schemas.verification import VerificationCodeRequest, VerificationCodeVerify, VerificationCodeResponse, VerificationStatusResponse, ForgotPasswordRequest, ResetPasswordRequest, ResetPasswordResponse
 from app.utils.auth import (
     verify_password,
     create_access_token,
     get_password_hash,
     ACCESS_TOKEN_EXPIRE_MINUTES,
-    get_current_user
+    get_current_user,
+    create_verification_token,
+    verify_verification_token
 )
+from app.core.config import settings
 from typing import Union
 from base64 import b64decode
 
@@ -59,6 +65,13 @@ async def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # E-posta doğrulama kontrolü
+    if not user.verifiedEmail:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Lütfen önce e-posta adresinizi doğrulayın. E-posta kutunuzu kontrol edin.",
+        )
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": str(user.id)},
@@ -101,13 +114,14 @@ async def register(
         # Şifreyi hashle
         hashed_password = get_password_hash(user_data.password)
 
-        # 1. Kullanıcı oluştur
+        # 1. Kullanıcı oluştur (verifiedEmail=False olarak)
         user = User(
             first_name=user_data.first_name,
             last_name=user_data.last_name,
             email=user_data.email,
             password=hashed_password,
-            role=user_data.role
+            role=user_data.role,
+            verifiedEmail=False  # E-posta doğrulanmamış olarak başlat
         )
         db.add(user)
         db.flush()
@@ -145,6 +159,23 @@ async def register(
             
             db.commit()
             
+            # E-posta doğrulama kodu gönder
+            try:
+                email_service = EmailService()
+                verification_code = verification_cache.store_code(user.email, expire_minutes=3)
+                user_name = f"{user.first_name} {user.last_name}"
+                
+                email_sent = email_service.send_verification_code(
+                    to_email=user.email,
+                    verification_code=verification_code,
+                    user_name=user_name
+                )
+                
+                if not email_sent:
+                    print(f"E-posta gönderimi başarısız: {user.email}")
+            except Exception as e:
+                print(f"E-posta gönderimi hatası: {str(e)}")
+            
             return StudentResponse(
                 user_id=new_student.user_id,
                 first_name=user.first_name,
@@ -168,6 +199,23 @@ async def register(
             db.add(new_academician)
             db.commit()
             db.refresh(new_academician)  # Veritabanından güncel veriyi al
+            
+            # E-posta doğrulama kodu gönder
+            try:
+                email_service = EmailService()
+                verification_code = verification_cache.store_code(user.email, expire_minutes=3)
+                user_name = f"{user.first_name} {user.last_name}"
+                
+                email_sent = email_service.send_verification_code(
+                    to_email=user.email,
+                    verification_code=verification_code,
+                    user_name=user_name
+                )
+                
+                if not email_sent:
+                    print(f"E-posta gönderimi başarısız: {user.email}")
+            except Exception as e:
+                print(f"E-posta gönderimi hatası: {str(e)}")
             
             return AcademicianResponse(
                 user_id=new_academician.user_id,
@@ -217,6 +265,265 @@ async def change_password(
     db.commit()
 
     return {"message": "Şifreniz başarıyla değiştirildi"}
+
+@router.get("/verify-email")
+async def verify_email(
+    token: str = Query(..., description="E-posta doğrulama token'ı"),
+    db: Session = Depends(get_db)
+):
+    """
+    E-posta doğrulama token'ını kullanarak kullanıcının e-postasını doğrular (eski sistem)
+    """
+    # Token'ı doğrula ve email'i al
+    email = verify_verification_token(token)
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Geçersiz veya süresi dolmuş doğrulama linki"
+        )
+    
+    # Kullanıcıyı bul
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Kullanıcı bulunamadı"
+        )
+    
+    # Zaten doğrulanmış mı kontrol et
+    if user.verifiedEmail:
+        return {"message": "E-posta adresi zaten doğrulanmış"}
+    
+    # E-postayı doğrulanmış olarak işaretle
+    user.verifiedEmail = True
+    db.commit()
+    
+    return {
+        "message": "E-posta adresiniz başarıyla doğrulandı. Artık giriş yapabilirsiniz.",
+        "email": email
+    }
+
+@router.post("/verify-code", response_model=VerificationStatusResponse)
+async def verify_code(
+    verification_data: VerificationCodeVerify,
+    db: Session = Depends(get_db)
+):
+    """
+    E-posta doğrulama kodunu kontrol eder (yeni sistem)
+    """
+    # Kullanıcıyı bul
+    user = db.query(User).filter(User.email == verification_data.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bu e-posta adresi ile kayıtlı kullanıcı bulunamadı"
+        )
+    
+    # Zaten doğrulanmış mı kontrol et
+    if user.verifiedEmail:
+        return VerificationStatusResponse(
+            message="E-posta adresi zaten doğrulanmış",
+            email=verification_data.email,
+            verified=True
+        )
+    
+    # Kodu doğrula
+    is_valid = verification_cache.verify_code(verification_data.email, verification_data.code, code_type="verification")
+    
+    if is_valid:
+        # E-postayı doğrulanmış olarak işaretle
+        user.verifiedEmail = True
+        db.commit()
+        
+        return VerificationStatusResponse(
+            message="E-posta adresiniz başarıyla doğrulandı! Artık giriş yapabilirsiniz.",
+            email=verification_data.email,
+            verified=True
+        )
+    else:
+        # Kalan süreyi kontrol et
+        remaining_time = verification_cache.get_remaining_time(verification_data.email, code_type="verification")
+        
+        if remaining_time is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Doğrulama kodu süresi dolmuş veya geçersiz. Lütfen yeni kod talep edin."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Geçersiz doğrulama kodu. Kalan süre: {remaining_time} saniye"
+            )
+
+@router.post("/resend-verification", response_model=VerificationCodeResponse)
+async def resend_verification_code(
+    request: VerificationCodeRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Doğrulama kodunu yeniden gönderir
+    """
+    # Kullanıcıyı bul
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bu e-posta adresi ile kayıtlı kullanıcı bulunamadı"
+        )
+    
+    # Zaten doğrulanmış mı kontrol et
+    if user.verifiedEmail:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="E-posta adresi zaten doğrulanmış"
+        )
+    
+    # Aktif kod var mı kontrol et
+    if verification_cache.has_active_code(request.email, code_type="verification"):
+        remaining_time = verification_cache.get_remaining_time(request.email, code_type="verification")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Zaten aktif bir doğrulama kodunuz var. Kalan süre: {remaining_time} saniye"
+        )
+    
+    # Yeni doğrulama kodu gönder
+    try:
+        email_service = EmailService()
+        verification_code = verification_cache.store_code(request.email, expire_minutes=3, code_type="verification")
+        user_name = f"{user.first_name} {user.last_name}"
+        
+        email_sent = email_service.send_verification_code(
+            to_email=request.email,
+            verification_code=verification_code,
+            user_name=user_name
+        )
+        
+        if not email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="E-posta gönderimi başarısız"
+            )
+        
+        return VerificationCodeResponse(
+            message="Yeni doğrulama kodu e-posta adresinize gönderildi",
+            remaining_time=180  # 3 dakika
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"E-posta gönderimi hatası: {str(e)}"
+        )
+
+@router.post("/forgot-password", response_model=VerificationCodeResponse)
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Şifre sıfırlama kodu gönderir
+    """
+    # Kullanıcıyı bul
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bu e-posta adresi ile kayıtlı kullanıcı bulunamadı"
+        )
+    
+    # Aktif şifre sıfırlama kodu var mı kontrol et
+    if verification_cache.has_active_code(request.email, code_type="reset"):
+        remaining_time = verification_cache.get_remaining_time(request.email, code_type="reset")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Zaten aktif bir şifre sıfırlama kodunuz var. Kalan süre: {remaining_time} saniye"
+        )
+    
+    # Şifre sıfırlama kodu gönder
+    try:
+        email_service = EmailService()
+        reset_code = verification_cache.store_code(request.email, expire_minutes=5, code_type="reset")
+        user_name = f"{user.first_name} {user.last_name}"
+        
+        email_sent = email_service.send_password_reset_code(
+            to_email=request.email,
+            reset_code=reset_code,
+            user_name=user_name
+        )
+        
+        if not email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="E-posta gönderimi başarısız"
+            )
+        
+        return VerificationCodeResponse(
+            message="Şifre sıfırlama kodu e-posta adresinize gönderildi",
+            remaining_time=300  # 5 dakika
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"E-posta gönderimi hatası: {str(e)}"
+        )
+
+@router.post("/reset-password", response_model=ResetPasswordResponse)
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Şifre sıfırlama kodunu kullanarak şifreyi değiştirir
+    """
+    # Kullanıcıyı bul
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bu e-posta adresi ile kayıtlı kullanıcı bulunamadı"
+        )
+    
+    # Şifre onayını kontrol et
+    if request.new_password != request.confirm_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Yeni şifre ve onay şifresi eşleşmiyor"
+        )
+    
+    # Şifre uzunluğunu kontrol et
+    if len(request.new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Şifre en az 6 karakter olmalıdır"
+        )
+    
+    # Kodu doğrula
+    is_valid = verification_cache.verify_code(request.email, request.code, code_type="reset")
+    
+    if not is_valid:
+        # Kalan süreyi kontrol et
+        remaining_time = verification_cache.get_remaining_time(request.email, code_type="reset")
+        
+        if remaining_time is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Şifre sıfırlama kodu süresi dolmuş veya geçersiz. Lütfen yeni kod talep edin."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Geçersiz şifre sıfırlama kodu. Kalan süre: {remaining_time} saniye"
+            )
+    
+    # Şifreyi güncelle
+    user.password = get_password_hash(request.new_password)
+    db.commit()
+    
+    return ResetPasswordResponse(
+        message="Şifreniz başarıyla değiştirildi. Artık yeni şifrenizle giriş yapabilirsiniz.",
+        email=request.email
+    )
 
 @router.post("/logout")
 async def logout(

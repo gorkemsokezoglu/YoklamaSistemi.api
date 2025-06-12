@@ -7,11 +7,12 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.models import User
+from app.core.config import settings
 
 # JWT ayarları
-SECRET_KEY = "your-secret-key-keep-it-secret"  # Production'da güvenli bir şekilde saklanmalı
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 # Öğrencilerin erişebileceği endpoint'ler ve HTTP metodları
 STUDENT_ALLOWED_ENDPOINTS: Dict[str, List[str]] = {
@@ -73,6 +74,35 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def create_verification_token(email: str) -> str:
+    """
+    E-posta doğrulama için token oluşturur
+    """
+    expire = datetime.utcnow() + timedelta(minutes=settings.VERIFICATION_TOKEN_EXPIRE_MINUTES)
+    to_encode = {
+        "sub": email,
+        "exp": expire,
+        "type": "email_verification"
+    }
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_verification_token(token: str) -> Optional[str]:
+    """
+    E-posta doğrulama token'ını doğrular ve email'i döner
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if email is None or token_type != "email_verification":
+            return None
+            
+        return email
+    except JWTError:
+        return None
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)) -> User:
     credentials_exception = HTTPException(

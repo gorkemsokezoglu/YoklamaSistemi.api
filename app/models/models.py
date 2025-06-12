@@ -16,6 +16,7 @@ class User(Base):
     role = Column(String(50), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    verifiedEmail = Column(Boolean, default=False, nullable=False)
 
     __table_args__ = (
         CheckConstraint(role.in_(['admin', 'academician', 'student'])),
