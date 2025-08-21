@@ -22,7 +22,7 @@ async def create_face_data(
     db: Session = Depends(get_db)
 ):
     """
-    Mobil uygulamadan gelen tek bir yüz verisini kaydeder
+    Mobil uygulamadan gelen tek bir yüz verisini encoding yaparak kaydeder
     """
     # Öğrencinin kendi verisi mi kontrol et
     if str(current_user.id) != str(face_data.student_id):
@@ -32,18 +32,14 @@ async def create_face_data(
         )
 
     try:
-        # Base64 string'i bytes'a çevir
-        face_image_bytes = base64.b64decode(face_data.face_image)
-        
-        # Yüz verisini kaydet
-        db_face_data = FaceData(
-            student_id=face_data.student_id,
-            face_image=face_image_bytes
-        )
-        db.add(db_face_data)
-        db.commit()
-        db.refresh(db_face_data)
+        # Base64 string'i encoding'e çevir ve kaydet
+        db_face_data = face_data_crud.create_face_data(db, face_data)
         return db_face_data
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -58,7 +54,7 @@ async def create_multiple_face_data(
     db: Session = Depends(get_db)
 ):
     """
-    Mobil uygulamadan gelen birden fazla yüz verisini kaydeder
+    Mobil uygulamadan gelen birden fazla yüz verisini encoding yaparak kaydeder
     """
     # Öğrencinin kendi verisi mi kontrol et
     if str(current_user.id) != str(face_data.student_id):
@@ -68,25 +64,8 @@ async def create_multiple_face_data(
         )
 
     try:
-        saved_count = 0
-        for base64_image in face_data.face_images:
-            try:
-                # Base64 string'i bytes'a çevir
-                face_image_bytes = base64.b64decode(base64_image)
-                
-                # Yüz verisini kaydet
-                db_face_data = FaceData(
-                    student_id=face_data.student_id,
-                    face_image=face_image_bytes
-                )
-                db.add(db_face_data)
-                saved_count += 1
-            except Exception as e:
-                print(f"Yüz verisi kaydedilirken hata oluştu: {str(e)}")
-                continue
-        
-        db.commit()
-        return f"{saved_count} adet yüz verisi başarıyla kaydedildi"
+        result = face_data_crud.create_multiple_face_data(db, face_data)
+        return result
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -146,12 +125,19 @@ async def update_face_data(
             detail="Sadece kendi yüz verinizi güncelleyebilirsiniz"
         )
 
-    for key, value in face_data.dict().items():
-        setattr(db_face_data, key, value)
-
-    db.commit()
-    db.refresh(db_face_data)
-    return db_face_data
+    try:
+        # Yeni base64 görüntüyü encoding'e çevir
+        encoding_bytes = face_data_crud.image_to_encoding(face_data.face_image)
+        db_face_data.face_image = encoding_bytes
+        
+        db.commit()
+        db.refresh(db_face_data)
+        return db_face_data
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 @router.delete("/{face_data_id}")
 async def delete_face_data(

@@ -139,23 +139,26 @@ async def register(
             db.add(new_student)
             db.flush()
             
-            # Yüz verilerini kaydet
+            # Yüz verilerini encoding yaparak kaydet
             if hasattr(user_data, 'face_data') and user_data.face_data:
                 try:
+                    from app.crud.crud_faceData import image_to_encoding
                     for face_data in user_data.face_data:
                         if isinstance(face_data, dict) and 'face_image_base64' in face_data:
                             try:
-                                face_image_bytes = b64decode(face_data['face_image_base64'])
+                                # Base64 görüntüyü encoding'e çevir
+                                encoding_bytes = image_to_encoding(face_data['face_image_base64'])
                                 new_face_data = FaceData(
                                     student_id=new_student.user_id,
-                                    face_image=face_image_bytes
+                                    face_image=encoding_bytes  # Artık encoding kaydediyoruz
                                 )
                                 db.add(new_face_data)
+                                print(f"✅ Yüz encoding'i kaydedildi: {new_student.user_id}")
                             except Exception as e:
-                                print(f"Yüz verisi işlenirken hata: {str(e)}")
+                                print(f"❌ Yüz verisi encoding hatası: {str(e)}")
                                 continue
                 except Exception as e:
-                    print(f"Yüz verileri işlenirken hata: {str(e)}")
+                    print(f"❌ Yüz verileri işlenirken hata: {str(e)}")
             
             db.commit()
             

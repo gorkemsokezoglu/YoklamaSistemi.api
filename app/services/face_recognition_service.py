@@ -6,6 +6,7 @@ import face_recognition
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.models import FaceData, Student
+import pickle
 
 class FaceRecognitionService:
     def __init__(self, db: Session):
@@ -45,28 +46,9 @@ class FaceRecognitionService:
             print(f"Encoding oluşturma hatası: {str(e)}")
             return None
 
-    def bytes_to_image(self, image_bytes: bytes) -> Optional[np.ndarray]:
-        """
-        Bytes formatındaki görüntüyü numpy dizisine dönüştürür
-        """
-        try:
-            # Bytes'ı numpy array'e dönüştür
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            # Numpy array'i görüntüye decode et
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if img is None:
-                raise ValueError("Görüntü decode edilemedi")
-                
-            return img
-            
-        except Exception as e:
-            print(f"Görüntü dönüştürme hatası: {str(e)}")
-            return None
-
     def get_all_face_encodings(self) -> List[Tuple[UUID, np.ndarray]]:
         """
-        Veritabanındaki tüm yüz encoding'lerini getirir
+        Veritabanından önceden hesaplanmış encoding'leri getirir (HIZLI)
         """
         face_data_records = self.db.query(FaceData).all()
         encodings = []
@@ -80,35 +62,28 @@ class FaceRecognitionService:
                     print(f"Uyarı: {record.student_id} ID'li öğrencinin yüz verisi boş")
                     continue
                 
-                # Görüntüyü numpy dizisine dönüştür
-                face_image = self.bytes_to_image(record.face_image)
-                
-                if face_image is None:
-                    print(f"Uyarı: {record.student_id} ID'li öğrencinin görüntüsü decode edilemedi")
+                # Pickle ile serialize edilmiş encoding'i deserialize et
+                try:
+                    encoding = pickle.loads(record.face_image)
+                    print(f"Başarılı: {record.student_id} ID'li öğrencinin encoding'i yüklendi")
+                    encodings.append((record.student_id, encoding))
+                except pickle.UnpicklingError:
+                    print(f"Uyarı: {record.student_id} ID'li öğrencinin encoding'i bozuk (eski format olabilir)")
                     continue
-                
-                # RGB formatına dönüştür
-                rgb_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-                
-                # Yüz encoding'ini hesapla
-                face_encodings = face_recognition.face_encodings(rgb_image)
-                
-                if len(face_encodings) > 0:
-                    print(f"Başarılı: {record.student_id} ID'li öğrencinin yüz encoding'i oluşturuldu")
-                    encodings.append((record.student_id, face_encodings[0]))
-                else:
-                    print(f"Uyarı: {record.student_id} ID'li öğrencinin yüzü tespit edilemedi")
+                except Exception as e:
+                    print(f"Encoding yükleme hatası (student_id: {record.student_id}): {str(e)}")
+                    continue
                     
             except Exception as e:
-                print(f"Encoding oluşturma hatası (student_id: {record.student_id}): {str(e)}")
+                print(f"Genel hata (student_id: {record.student_id}): {str(e)}")
                 continue
             
-        print(f"Toplam {len(encodings)} adet yüz encoding'i oluşturuldu")
+        print(f"Toplam {len(encodings)} adet encoding yüklendi (ÇOK HIZLI!)")
         return encodings
 
     def find_matching_student(self, face_encoding: np.ndarray) -> Optional[UUID]:
         """
-        Verilen yüz encoding'i ile eşleşen öğrenciyi bulur
+        Verilen yüz encoding'i ile eşleşen öğrenciyi bulur (HIZLI)
         """
         known_encodings = self.get_all_face_encodings()
         

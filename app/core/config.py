@@ -3,7 +3,7 @@ from typing import Optional
 
 class Settings:
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://admin:admin@localhost:5432/yoklama_db")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://admin:01230123@localhost:5432/db_yuzTanima")
     
     # JWT
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production")
@@ -17,7 +17,7 @@ class Settings:
     EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "aklb ywkh hqga zejv")  # Gmail uygulama şifresi
     
     # Backend URL (doğrulama linklerinde kullanılacak)
-    BACKEND_URL: str = os.getenv("BACKEND_URL", "http://192.168.1.107:8000")
+    BACKEND_URL: str = os.getenv("BACKEND_URL", "http://172.20.10.2:8000")
     
     # Verification token expire time (minutes)
     VERIFICATION_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 saat

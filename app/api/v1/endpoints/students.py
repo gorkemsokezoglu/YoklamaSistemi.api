@@ -104,20 +104,22 @@ def create_student_with_face_data(
         db.add(new_student)
         db.flush()
 
-        # 3. Yüz verilerini kaydet
+        # 3. Yüz verilerini encoding yaparak kaydet
+        from app.crud.crud_faceData import image_to_encoding
         for face_data in student.face_data:
             try:
-                # Base64 string'i bytes'a çevir
-                face_image_bytes = face_data.get_face_image_bytes()
+                # Base64 string'i encoding'e çevir
+                encoding_bytes = image_to_encoding(face_data.face_image_base64)
                 
-                # Yüz verisini kaydet
+                # Encoding'i kaydet
                 db_face_data = FaceData(
                     student_id=user.id,
-                    face_image=face_image_bytes
+                    face_image=encoding_bytes  # Artık encoding kaydediyoruz
                 )
                 db.add(db_face_data)
+                print(f"✅ Yüz encoding'i kaydedildi: {user.id}")
             except Exception as e:
-                print(f"Yüz verisi kaydedilirken hata oluştu: {str(e)}")
+                print(f"❌ Yüz encoding hatası: {str(e)}")
                 db.rollback()
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
